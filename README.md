@@ -1,5 +1,9 @@
 # SketchCAD
 
+[![Download SketchCAD for Windows](https://img.shields.io/badge/Download-SketchCAD.exe-1e5fd6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Atom0543/sketchcad/releases/latest/download/SketchCAD.exe)
+
+Windows 10/11 (needs Microsoft Edge WebView2, already present on most PCs). Single file, no installer. Windows may show a SmartScreen warning because the app is not code-signed: choose *More info* then *Run anyway*.
+
 2D CAD that is as easy as SketchUp, for laser-cut and robot parts. Thai / English UI, mm / cm / m / in.
 
 - Draw: line, rectangle, circle, arcs, polygon, pen (curves), pencil, text, leader, dimensions
