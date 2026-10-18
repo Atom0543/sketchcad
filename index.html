@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SketchCAD</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="menubar" id="menubar">
+        <span class="brand">SketchCAD</span>
+        <div id="menus" class="menus"></div>
+        <div class="spacer"></div>
+        <button id="undo" class="btn" data-i="undo"></button>
+        <button id="redo" class="btn" data-i="redo"></button>
+        <button id="fc" class="btn toggle" aria-pressed="false" data-i="fc"></button>
+        <button id="gs" class="btn toggle" aria-pressed="false" data-i="gridSnap"></button>
+        <label class="field"><span data-i="unit"></span>
+          <select id="unit"><option>mm</option><option>cm</option><option>m</option><option>in</option></select>
+        </label>
+        <button id="lang" class="btn">EN</button>
+        <button id="theme" class="btn" data-i="theme"></button>
+      </header>
+      <div id="menu" class="menu" hidden></div>
+      <nav class="toolbar" id="tools"></nav>
+      <main class="stage"><canvas id="cv"></canvas><input id="tb" class="tb" hidden autocomplete="off" /><div id="toast" class="toast" role="status" hidden></div><div id="editbar" class="editbar" hidden><span id="editname"></span><button id="editdone" class="btn primary" data-i="done"></button></div></main>
+      <div class="splitter" id="split" role="separator" aria-orientation="vertical"></div>
+      <aside class="props" id="tray"></aside>
+      <footer class="status">
+        <span id="hint"></span>
+        <span class="right"><span id="asv"></span><span id="coord"></span><span class="vcb"><span id="vcbl"></span><output id="vcb"></output></span></span>
+      </footer>
+    </div>
+
+    <dialog id="pg" class="dlg wide">
+      <h2 data-i="pageSetup"></h2>
+      <div class="pgwrap">
+        <div class="pgform">
+          <label><span data-i="paper"></span><select id="pgPaper"></select></label>
+          <label><span data-i="orient"></span>
+            <select id="pgOrient"><option value="l" data-i="landscape"></option><option value="p" data-i="portrait"></option></select></label>
+          <label><span data-i="pscale"></span><select id="pgScale"></select></label>
+          <label id="pgCustom" hidden><span data-i="custom"></span><input id="pgRatio" type="number" min="0.001" step="any" value="1"></label>
+          <label><span data-i="margin"></span><input id="pgMargin" type="number" min="0" step="1" value="10"></label>
+          <label><span data-i="lineW"></span><input id="pgLw" type="number" min="0.05" step="0.05" value="0.25"></label>
+          <label class="chk"><input type="checkbox" id="pgShowScale" checked /><span data-i="showScale"></span></label>
+          <label><span data-i="scaleCorner"></span>
+            <select id="pgCorner"><option value="bl" data-i="cBL"></option><option value="br" data-i="cBR"></option><option value="tl" data-i="cTL"></option><option value="tr" data-i="cTR"></option></select></label>
+          <button type="button" id="pgCenter" class="btn" data-i="centerPage"></button>
+          <div id="pgUnitsBox"><h3 class="sub" data-i="unitsT"></h3><div id="pgUnits"></div></div>
+          <p id="pgInfo" class="note"></p>
+        </div>
+        <div class="pgright">
+          <div id="pgTabs" class="pgtabs"></div>
+          <canvas id="pgCv" class="pgcv"></canvas>
+        </div>
+      </div>
+      <div class="dlgbtns">
+        <button type="button" id="pgCancel" class="btn" data-i="cancel"></button>
+        <button type="button" id="pgPrint" class="btn" data-i="print"></button>
+        <button type="button" id="pgPdf" class="btn primary" data-i="dlPdf"></button>
+      </div>
+    </dialog>
+
+    <dialog id="pngd" class="dlg">
+      <h2 data-i="exPng"></h2>
+      <label><span data-i="resolution"></span>
+        <select id="pngDpi"><option>96</option><option>150</option><option selected>300</option><option>600</option></select></label>
+      <label class="chk"><input type="checkbox" id="pngWhite" checked /><span data-i="whiteBg"></span></label>
+      <div class="dlgbtns">
+        <button type="button" id="pngCancel" class="btn" data-i="cancel"></button>
+        <button type="button" id="pngGo" class="btn primary" data-i="exportBtn"></button>
+      </div>
+    </dialog>
+
+    <dialog id="recd" class="dlg">
+      <h2 data-i="recoverT"></h2>
+      <p id="recMsg" class="note"></p>
+      <div class="dlgbtns">
+        <button type="button" id="recDiscard" class="btn" data-i="discard"></button>
+        <button type="button" id="recGo" class="btn primary" data-i="recover"></button>
+      </div>
+    </dialog>
+
+    <input type="file" id="file" hidden />
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
