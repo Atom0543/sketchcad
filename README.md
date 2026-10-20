@@ -1,9 +1,9 @@
 # SketchCAD
 
 [![Download the installer](https://img.shields.io/badge/Download-Installer-1e5fd6?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Atom0543/sketchcad/releases/latest/download/SketchCAD-Setup.exe)
-[![Download portable exe](https://img.shields.io/badge/Download-Portable%20exe-555?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Atom0543/sketchcad/releases/latest/download/SketchCAD.exe)
+[![Download portable zip](https://img.shields.io/badge/Download-Portable%20zip-555?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Atom0543/sketchcad/releases/latest/download/SketchCAD-portable.zip)
 
-Windows 10/11 (needs Microsoft Edge WebView2, already present on most PCs). Use the installer (per-user, no admin rights, adds a Start menu entry and an uninstaller) or the portable exe (a single file you can run from anywhere). Windows may show a SmartScreen warning because the app is not code-signed: choose *More info* then *Run anyway*.
+Windows 10/11 (needs Microsoft Edge WebView2, already present on most PCs). Use the installer (per-user, no admin rights, adds a Start menu entry and an uninstaller) or the portable zip (unzip anywhere, run SketchCAD.exe). Windows may show a SmartScreen warning because the app is not code-signed: choose *More info* then *Run anyway*.
 
 2D CAD that is as easy as SketchUp, for laser-cut and robot parts. Thai / English UI, mm / cm / m / in.
 
