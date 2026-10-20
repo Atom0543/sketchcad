@@ -78,7 +78,18 @@
       <p id="recMsg" class="note"></p>
       <div class="dlgbtns">
         <button type="button" id="recDiscard" class="btn" data-i="discard"></button>
+        <button type="button" id="recSaved" class="btn" data-i="recoverLast" hidden></button>
         <button type="button" id="recGo" class="btn primary" data-i="recover"></button>
+      </div>
+    </dialog>
+
+    <dialog id="closd" class="dlg">
+      <h2 data-i="closeT"></h2>
+      <p class="note" data-i="closeMsg"></p>
+      <div class="dlgbtns">
+        <button type="button" id="closeCancel" class="btn" data-i="closeCancel"></button>
+        <button type="button" id="closeNo" class="btn" data-i="dontSave"></button>
+        <button type="button" id="closeYes" class="btn primary" data-i="save"></button>
       </div>
     </dialog>
 

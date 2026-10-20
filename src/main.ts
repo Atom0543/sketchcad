@@ -2,18 +2,22 @@ import './style.css'
 import {
   type Pt, type Shape, type Rect, type Poly, type Txt, type Guide,
   images, defs, tags, env, dist, mid, deg, segDist, nearestOnSeg, rectEdges, polyVerts, polyEdges, straightEdges,
-  shapeDist, translate, bounds, tagOf, isVisible, isLocked, flat, expandInst,
-  arcAt, arcFrom3, arcFromBulge, inArc, sweepOf, normA, TAU, rotateShape, scaleShape,
-  type BNode, type Bz, bzEdges, nearestOnBz, insertNode, toggleSmooth, toBz, fitFree, cubicAt, bzSegs, flipShape, reflectShape, trimErase, splitShape,
+  shapeDist, pointInside, translate, bounds, tagOf, isVisible, isLocked, flat, expandInst,
+  arcAt, arcFrom3, arcFromBulge, inArc, sweepOf, TAU, rotateShape, scaleShape,
+  type BNode, type Bz, bzEdges, nearestOnBz, insertNode, toggleSmooth, toBz, fitFree, cubicAt, bzSegs, flipShape, reflectShape, trimErase, erasedPart, splitShape,
 } from './geom'
 import { drawShape, setImageLoadHandler, type View, FONT } from './render'
 import { toDxf, toSvg, parseDxf, parseSvg, toProject, parseProject, type Project } from './io'
 import { initPage, type Unit } from './pdf'
 import { initTray, type Panel } from './tray'
 import { kvGet, kvSet } from './autosave'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { layoutText, textShapes } from './text'
+import { FONTS } from './fonts'
+import { segCross, weldLast, faceAt, offsetPoly, circleSegHits } from './infer'
 import { type Laser, type Check, defaultLaser, kerfApply, checkPaths, sheetStats, laserColor } from './laser'
 
-type Tool = 'select' | 'eraser' | 'line' | 'rect' | 'circle' | 'poly' | 'offset' | 'fillet' | 'move' | 'tape' | 'protractor' | 'dim' | 'text' | 'leader' | 'place' | 'arc' | 'arc2' | 'arc3' | 'rotate' | 'scale' | 'pen' | 'penline' | 'pencil' | 'node' | 'reflect'
+type Tool = 'select' | 'eraser' | 'line' | 'rect' | 'circle' | 'poly' | 'offset' | 'fillet' | 'move' | 'tape' | 'protractor' | 'dim' | 'text' | 'leader' | 'place' | 'arc' | 'arc2' | 'arc3' | 'rotate' | 'scale' | 'pen' | 'penline' | 'pencil' | 'node' | 'reflect' | 'bucket' | 'stext' | 'radial'
 type ToolBtn = Exclude<Tool, 'place'>
 
 // ---------- i18n ----------
@@ -46,12 +50,12 @@ const T = {
     h_reflect0: 'Select shapes first. The mirror line follows the mouse (Tab = vertical / horizontal). Click to fix where it goes.',
     h_reflect1: 'Turn the line to the angle you want, then click. The arrow shows the side the reflection appears on. Ctrl = move instead of copy.',
     reflectSide: 'Reflection appears here',
-    autosaved: 'Auto-saved', recoverT: 'Recover unsaved work?', recover: 'Recover', discard: 'Discard', editingGroup: 'Editing group (click empty space or Esc to leave)',
+    autosaved: 'Auto-saved', recoverT: 'Recover unsaved work?', recover: 'Recover edited version', discard: 'Discard', recoverLast: 'Open last saved version', closeT: 'Save changes before closing?', closeMsg: 'This drawing has changes that are not saved.', dontSave: "Don't save", closeCancel: 'Cancel', editingGroup: 'Editing group (click empty space or Esc to leave)',
     flipH: 'Flip left-right', flipV: 'Flip top-bottom', mirrorH: 'Mirror copy left-right', mirrorV: 'Mirror copy top-bottom', flipHint: 'Hold Ctrl to leave the original and make a mirrored copy.',
     editPts: 'Edit points', penline: 'Pen (straight lines)', pencil: 'Pencil (freehand)',
     h_penline0: 'Click to add corner points. Click the first point to close; Enter, double-click or right-click to finish.', h_penline1: 'Click to add corner points. Click the first point to close; Enter, double-click or right-click to finish.',
     h_pencil0: 'Press and drag to draw freely. Let go and the stroke is smoothed into an editable curve.', l_penline: '', l_pencil: '',
-    pen: 'Pen (curves)', node: 'Edit points', toPath: 'Convert to editable path', fillL: 'Fill', noFill: 'No fill', nodesL: 'Points',
+    pen: 'Pen (curves)', node: 'Edit points', bucket: 'Paint bucket', stext: 'Outline text (laser)', h_stext0: 'Type the text in the box at the top left, pick a font, then click to place it. Letters are real paths: cut the outline, or engrave solid.', radial: 'Radius / diameter dimension', h_radial0: 'Click a circle or arc to measure', h_radial1: 'Move above / below (horizontal) or beside (vertical) the shape, then click to place · Shift switches radius ↔ diameter', l_stext: '', l_radial: '', stextPh: 'Type text…', stextSize: 'Size (mm)', stextSolid: 'Solid', stextBold: 'Bold', addFont: '+ Add font (.ttf / .otf)…', rmFont: 'Remove this font', badFont: 'Could not use this font', typeText: 'Type some text first', h_bucket0: 'Pick a colour from the bar at the top left, then click inside a closed shape to fill it · Shift+click clears the fill.', toPath: 'Convert to editable path', fillL: 'Fill', noFill: 'No fill', colorL: 'Colour', colorAuto: 'Automatic', notClosed: 'This outline is not closed: its lines or arcs do not all meet', nodesL: 'Points',
     h_pen0: 'Click = corner point · click and drag = curve point. Click the first point to close; Enter, double-click or right-click to finish; Backspace undoes a point.',
     h_pen1: 'Click = corner point · click and drag = curve point. Click the first point to close; Enter, double-click or right-click to finish; Backspace undoes a point.',
     h_node0: 'Click a shape to edit its points. Click the line to add a point there (it snaps to the middle) · drag the point or its handles (small circles) to turn and bend · double-click a point: corner ↔ smooth · Alt+drag the line bends it · Delete removes a point.',
@@ -88,8 +92,8 @@ const T = {
     h_dim0: 'Click the first point', h_dim1: 'Click the second point', h_dim2: 'Click to place the dimension line.',
     h_text0: 'Click where the text goes', h_leader0: 'Click the point to label', h_leader1: 'Click where the text goes',
     l_line: 'Length', l_rect: 'Dimensions', l_circle: 'Radius', l_poly: 'Flat width', l_offset: 'Distance', l_fillet: 'Radius',
-    l_move: 'Distance', l_tape: 'Distance', l_protractor: 'Angle', l_dim: 'Length', l_text: '', l_leader: '', l_select: '', l_eraser: '',
-    endpoint: 'Endpoint', midpoint: 'Midpoint', center: 'Centre', quadrant: 'Quadrant', onedge: 'On edge', onguide: 'On guide',
+    l_move: 'Distance', l_tape: 'Distance', l_protractor: 'Angle', l_dim: 'Length', l_text: '', l_leader: '', l_select: '', l_eraser: '', l_bucket: '',
+    endpoint: 'Endpoint', midpoint: 'Midpoint', center: 'Centre', quadrant: 'Quadrant', onedge: 'On edge', onguide: 'On guide', intersect: 'Intersection', align: 'In line with point', parallel: 'Parallel to edge', perpendicular: 'Perpendicular to edge',
     pageSetup: 'Page setup', paper: 'Paper', orient: 'Orientation', landscape: 'Landscape', portrait: 'Portrait', pscale: 'Scale',
     fit: 'Fit to page', custom: 'Custom 1 : N', margin: 'Margin (mm)', lineW: 'Line weight (mm)', centerPage: 'Centre on page',
     cancel: 'Cancel', print: 'Print…', dlPdf: 'Download PDF', drawing: 'Drawing', tooBig: 'Drawing is larger than the page at this scale.',
@@ -127,12 +131,12 @@ const T = {
     h_reflect0: 'เลือกชิ้นงานก่อน เส้นกระจกจะตามเมาส์ (Tab = สลับตั้ง/นอน) คลิกเพื่อกำหนดตำแหน่งเส้น',
     h_reflect1: 'หมุนเส้นไปมุมที่ต้องการแล้วคลิก ลูกศรบอกฝั่งที่ภาพสะท้อนจะออก · Ctrl = ย้ายแทนการคัดลอก',
     reflectSide: 'ภาพสะท้อนออกทางนี้',
-    autosaved: 'บันทึกอัตโนมัติ', recoverT: 'กู้คืนงานที่ยังไม่ได้บันทึก?', recover: 'กู้คืน', discard: 'ทิ้ง', editingGroup: 'กำลังแก้ไขกลุ่ม (คลิกที่ว่างหรือกด Esc เพื่อออก)',
+    autosaved: 'บันทึกอัตโนมัติ', recoverT: 'กู้คืนงานที่ยังไม่ได้บันทึก?', recover: 'กู้คืนงานที่แก้ค้างไว้', discard: 'ทิ้ง', recoverLast: 'เปิดไฟล์ที่บันทึกล่าสุด', closeT: 'บันทึกก่อนปิดไหม?', closeMsg: 'งานนี้มีการแก้ไขที่ยังไม่ได้บันทึก', dontSave: 'ไม่บันทึก', closeCancel: 'ยกเลิก', editingGroup: 'กำลังแก้ไขกลุ่ม (คลิกที่ว่างหรือกด Esc เพื่อออก)',
     flipH: 'พลิกซ้าย-ขวา', flipV: 'พลิกบน-ล่าง', mirrorH: 'คัดลอกแบบกระจก ซ้าย-ขวา', mirrorV: 'คัดลอกแบบกระจก บน-ล่าง', flipHint: 'กด Ctrl ค้างเพื่อเก็บต้นฉบับไว้และทำสำเนาแบบกระจก',
     editPts: 'แก้ไขจุด (ดัดเส้น)', penline: 'ปากกา (เส้นตรง)', pencil: 'ดินสอ (วาดอิสระ)',
     h_penline0: 'คลิกเพื่อวางจุดมุม · คลิกจุดแรกเพื่อปิดรูป · Enter / ดับเบิลคลิก / คลิกขวา = จบ', h_penline1: 'คลิกเพื่อวางจุดมุม · คลิกจุดแรกเพื่อปิดรูป · Enter / ดับเบิลคลิก / คลิกขวา = จบ',
     h_pencil0: 'กดแล้วลากเพื่อวาดอิสระ ปล่อยเมาส์แล้วเส้นจะถูกทำให้เรียบเป็นเส้นโค้งที่แก้ไขได้', l_penline: '', l_pencil: '',
-    pen: 'ปากกา (เส้นโค้ง)', node: 'แก้ไขจุด', toPath: 'แปลงเป็นเส้นที่แก้ไขได้', fillL: 'สีพื้น', noFill: 'ไม่มีสีพื้น', nodesL: 'จำนวนจุด',
+    pen: 'ปากกา (เส้นโค้ง)', node: 'แก้ไขจุด', bucket: 'ถังสี', stext: 'ตัวอักษรเส้น (ตัดเลเซอร์)', h_stext0: 'พิมพ์ข้อความในกล่องมุมซ้ายบน เลือกฟอนต์ แล้วคลิกเพื่อวาง ตัวอักษรเป็นเส้นจริง ตัดตามขอบ หรือสลักแบบทึบได้', radial: 'ขนาดรัศมี / เส้นผ่านศูนย์กลาง', h_radial0: 'คลิกวงกลมหรือส่วนโค้งที่จะวัด', h_radial1: 'เลื่อนเมาส์ไปด้านบน/ล่าง (แนวนอน) หรือด้านข้าง (แนวตั้ง) ของรูป แล้วคลิกวาง · Shift สลับ รัศมี ↔ เส้นผ่านศูนย์กลาง', l_stext: '', l_radial: '', stextPh: 'พิมพ์ข้อความ…', stextSize: 'ขนาด (มม.)', stextSolid: 'ทึบ', stextBold: 'ตัวหนา', addFont: '+ เพิ่มฟอนต์ (.ttf / .otf)…', rmFont: 'ลบฟอนต์นี้', badFont: 'ใช้ฟอนต์นี้ไม่ได้', typeText: 'พิมพ์ข้อความก่อน', h_bucket0: 'เลือกสีที่แถบสีมุมซ้ายบน แล้วคลิกในรูปปิดเพื่อเทสี · Shift+คลิก เพื่อล้างสี', toPath: 'แปลงเป็นเส้นที่แก้ไขได้', fillL: 'สีพื้น', noFill: 'ไม่มีสีพื้น', colorL: 'สี', colorAuto: 'อัตโนมัติ', notClosed: 'เส้นรอบยังไม่ปิด: มีเส้นหรือส่วนโค้งที่ปลายไม่ชนกัน', nodesL: 'จำนวนจุด',
     h_pen0: 'คลิก = จุดมุม · คลิกแล้วลาก = จุดโค้ง · คลิกจุดแรกเพื่อปิดรูป · Enter / ดับเบิลคลิก / คลิกขวา = จบ · Backspace = ลบจุดล่าสุด',
     h_pen1: 'คลิก = จุดมุม · คลิกแล้วลาก = จุดโค้ง · คลิกจุดแรกเพื่อปิดรูป · Enter / ดับเบิลคลิก / คลิกขวา = จบ · Backspace = ลบจุดล่าสุด',
     h_node0: 'คลิกรูปเพื่อแก้จุด คลิกบนเส้นเพื่อเพิ่มจุดตรงนั้น (ใกล้กึ่งกลางจะเกาะกึ่งกลางพอดี) · ลากจุดหรือก้านจับ (วงกลมเล็ก) เพื่อหมุนและดัดโค้ง · ดับเบิลคลิกจุด: มุม ↔ โค้ง · Alt+ลากที่เส้น = ดัดตรงๆ · Delete ลบจุด',
@@ -169,8 +173,8 @@ const T = {
     h_dim0: 'คลิกจุดแรก', h_dim1: 'คลิกจุดที่สอง', h_dim2: 'คลิกเพื่อวางเส้นขนาด',
     h_text0: 'คลิกตำแหน่งที่จะวางข้อความ', h_leader0: 'คลิกจุดที่จะชี้', h_leader1: 'คลิกตำแหน่งที่จะวางข้อความ',
     l_line: 'ความยาว', l_rect: 'ขนาด', l_circle: 'รัศมี', l_poly: 'กว้างขอบถึงขอบ', l_offset: 'ระยะ', l_fillet: 'รัศมี',
-    l_move: 'ระยะ', l_tape: 'ระยะ', l_protractor: 'มุม', l_dim: 'ความยาว', l_text: '', l_leader: '', l_select: '', l_eraser: '',
-    endpoint: 'จุดปลาย', midpoint: 'จุดกึ่งกลาง', center: 'จุดศูนย์กลาง', quadrant: 'จุดสี่ทิศ', onedge: 'บนขอบ', onguide: 'บนเส้นไกด์',
+    l_move: 'ระยะ', l_tape: 'ระยะ', l_protractor: 'มุม', l_dim: 'ความยาว', l_text: '', l_leader: '', l_select: '', l_eraser: '', l_bucket: '',
+    endpoint: 'จุดปลาย', midpoint: 'จุดกึ่งกลาง', center: 'จุดศูนย์กลาง', quadrant: 'จุดสี่ทิศ', onedge: 'บนขอบ', onguide: 'บนเส้นไกด์', intersect: 'จุดตัด', align: 'แนวเดียวกับจุด', parallel: 'ขนานกับขอบ', perpendicular: 'ตั้งฉากกับขอบ',
     pageSetup: 'ตั้งค่าหน้ากระดาษ', paper: 'กระดาษ', orient: 'แนวกระดาษ', landscape: 'แนวนอน', portrait: 'แนวตั้ง', pscale: 'สเกล',
     fit: 'พอดีหน้า', custom: 'กำหนดเอง 1 : N', margin: 'ขอบกระดาษ (มม.)', lineW: 'ความหนาเส้น (มม.)', centerPage: 'จัดกึ่งกลางหน้า',
     cancel: 'ยกเลิก', print: 'พิมพ์…', dlPdf: 'ดาวน์โหลด PDF', drawing: 'ขนาดงาน', tooBig: 'งานใหญ่กว่ากระดาษที่สเกลนี้',
@@ -233,8 +237,11 @@ let segDrag: { seg: number; t: number; base: BNode[] } | null = null // dragging
 let nodeDrag: { kind: 'p' | 'hi' | 'ho'; i: number } | null = null
 let gridSnap = false // off by default: lines follow your direction, not the grid
 let axisHit: { ref: Pt; axis: 'h' | 'v' } | null = null
-type SnapKey = 'endpoint' | 'midpoint' | 'center' | 'quadrant' | 'onedge' | 'onguide'
-let snapHit: { p: Pt; l: SnapKey } | null = null
+type SnapKey = 'endpoint' | 'midpoint' | 'center' | 'quadrant' | 'onedge' | 'onguide' | 'intersect'
+let snapHit: { p: Pt; l: SnapKey; ln?: [Pt, Pt] } | null = null
+let touched: Pt[] = [] // points the cursor has rested on: later moves line up with them (dotted guide)
+let refEdges: [Pt, Pt][] = [] // edges / guides at the start point or under the cursor: moves can lock parallel / perpendicular to them
+let infer: { a: Pt; b: Pt; l: 'align' | 'parallel' | 'perpendicular' }[] = []
 let reveal = -1, dwellIdx = -1, dwellTimer = 0
 let pending: { p: Pt; tip?: Pt } | null = null
 const view: View = { ox: 0, oy: 0, s: 2 }
@@ -258,7 +265,7 @@ const sy = (y: number) => view.oy - y * view.s
 const wx = (px: number) => (px - view.ox) / view.s
 const wy = (py: number) => (view.oy - py) / view.s
 const effCenter = () => fromCenter !== ctrl
-const busy = () => start !== null || penNodes.length > 0 || apts.length > 0 || prot.length > 0 || offsetIdx >= 0 || filletIdx >= 0
+const busy = () => start !== null || penNodes.length > 0 || apts.length > 0 || prot.length > 0 || offsetIdx >= 0 || filletIdx >= 0 || radialIdx >= 0
 function setSel(ix: number[]) {
   const set = new Set<number>()
   for (const i of ix) {
@@ -272,7 +279,7 @@ function setSel(ix: number[]) {
 const tagged = <T extends Shape>(s: T): T => (activeTag === '0' || s.t === 'guide' ? s : { ...s, tag: activeTag })
 const uid = () => Math.random().toString(36).slice(2, 10)
 
-type SP = { p: Pt; l: SnapKey }
+type SP = { p: Pt; l: SnapKey; ln?: [Pt, Pt] } // ln = the straight edge / guide the point sits on
 function basePoints(): SP[] {
   const out: SP[] = []
   for (const s of flat(shapes)) {
@@ -316,14 +323,46 @@ function edgeSnap(p: Pt): SP | null {
   shapes.forEach((s, i) => {
     if (moveSet.includes(i) || !isVisible(s) || (nodeDrag && i === sel)) return
     const c: Pt[] = []
+    let ln: [Pt, Pt] | undefined
     if (s.t === 'bz') for (const [a, b] of bzEdges(s)) c.push(nearestOnSeg(p, a, b))
     if (s.t === 'circle') { const d = dist(p, s.c) || 1; c.push({ x: s.c.x + ((p.x - s.c.x) / d) * s.r, y: s.c.y + ((p.y - s.c.y) / d) * s.r }) }
     else if (s.t === 'arc') { const a = Math.atan2(p.y - s.c.y, p.x - s.c.x); if (inArc(s, a)) c.push({ x: s.c.x + s.r * Math.cos(a), y: s.c.y + s.r * Math.sin(a) }) }
-    else if (s.t === 'guide') { const t = (p.x - s.p.x) * s.d.x + (p.y - s.p.y) * s.d.y; c.push({ x: s.p.x + s.d.x * t, y: s.p.y + s.d.y * t }) }
-    else for (const [a, b] of straightEdges(s)) c.push(nearestOnSeg(p, a, b))
-    for (const q of c) { const d = dist(p, q); if (d < bd) { bd = d; best = { p: q, l: s.t === 'guide' ? 'onguide' : 'onedge' } } }
+    else if (s.t === 'guide') { const t = (p.x - s.p.x) * s.d.x + (p.y - s.p.y) * s.d.y; c.push({ x: s.p.x + s.d.x * t, y: s.p.y + s.d.y * t }); ln = [s.p, { x: s.p.x + s.d.x, y: s.p.y + s.d.y }] }
+    else for (const [a, b] of straightEdges(s)) { const q = nearestOnSeg(p, a, b); c.push(q); if (dist(p, q) < bd) ln = [a, b] }
+    for (const q of c) { const d = dist(p, q); if (d < bd) { bd = d; best = { p: q, l: s.t === 'guide' ? 'onguide' : 'onedge', ln } } }
   })
   return best
+}
+/** Where two edges (or guides) cross near the cursor. */
+function interSnap(p: Pt): SP | null {
+  const tol = 10 / view.s
+  const segs: [Pt, Pt][] = []
+  shapes.forEach((s, i) => {
+    if (moveSet.includes(i) || !isVisible(s) || (nodeDrag && i === sel)) return
+    const e: [Pt, Pt][] = s.t === 'guide' ? [[{ x: s.p.x - s.d.x * 1e5, y: s.p.y - s.d.y * 1e5 }, { x: s.p.x + s.d.x * 1e5, y: s.p.y + s.d.y * 1e5 }]] : s.t === 'bz' ? bzEdges(s) : straightEdges(s)
+    for (const [a, b] of e) if (segDist(p, a, b) < tol * 1.5) segs.push([a, b])
+  })
+  let best: SP | null = null, bd = tol
+  for (let i = 0; i < segs.length; i++) for (let j = i + 1; j < segs.length; j++) {
+    const q = segCross(segs[i][0], segs[i][1], segs[j][0], segs[j][1])
+    if (q && dist(p, q) < bd) { bd = dist(p, q); best = { p: q, l: 'intersect' } }
+  }
+  return best
+}
+/** Arc, third click: the end snaps to where the radius circle crosses an edge or guide, then the sweep follows the mouse round. */
+function arcFollow(raw: Pt) {
+  const c = apts[0], r = dist(c, apts[1]), tol = 10 / view.s
+  let best: Pt | null = null, bd = tol
+  shapes.forEach((s, i) => {
+    if (!isVisible(s) || (nodeDrag && i === sel)) return
+    const e: [Pt, Pt][] = s.t === 'guide' ? [[{ x: s.p.x - s.d.x * 1e5, y: s.p.y - s.d.y * 1e5 }, { x: s.p.x + s.d.x * 1e5, y: s.p.y + s.d.y * 1e5 }]] : s.t === 'bz' ? bzEdges(s) : straightEdges(s)
+    for (const [a, b] of e) for (const q of circleSegHits(c, r, a, b)) if (dist(q, raw) < bd) { bd = dist(q, raw); best = q }
+  })
+  if (best) { cur = best; snapHit = { p: best, l: 'intersect' } }
+  if (r < 1e-9) return
+  const th = Math.atan2(cur.y - c.y, cur.x - c.x)
+  arcSweep = Math.max(-TAU, Math.min(TAU, arcSweep + ((((th - arcLastAng + Math.PI) % TAU) + TAU) % TAU) - Math.PI))
+  arcLastAng = th
 }
 function snap(p: Pt): Pt {
   const tol = 10 / view.s
@@ -332,7 +371,7 @@ function snap(p: Pt): Pt {
     const d = dist(p, q.p)
     if (d < bd) { bd = d; best = q }
   }
-  best = best ?? edgeSnap(p)
+  best = best ?? interSnap(p) ?? edgeSnap(p)
   snapHit = best
   if (best) return best.p
   if (!gridSnap) return p
@@ -346,7 +385,53 @@ function axisRef(): Pt | null {
   if (tool === 'line' || tool === 'move' || tool === 'leader') return start
   if (tool === 'dim') return dimB ? null : start
   if (tool === 'tape') return tapeEdge ? null : start
+  if ((tool === 'arc' || tool === 'arc2' || tool === 'arc3') && apts.length === 1) return apts[0] // radius / chord lines lock horizontal or vertical
   return null
+}
+/** Cursor is on an edge / guide: slide along it to where it meets a horizontal / vertical / parallel / perpendicular inference line. */
+function inferOnLine([a, b]: [Pt, Pt], ref: Pt | null) {
+  const dx = b.x - a.x, dy = b.y - a.y
+  const rays: { o: Pt; d: Pt }[] = []
+  for (const q of ref ? [...touched, ref] : touched) rays.push({ o: q, d: { x: 1, y: 0 } }, { o: q, d: { x: 0, y: 1 } })
+  if (ref) for (const [e0, e1] of refEdges) {
+    const ex = e1.x - e0.x, ey = e1.y - e0.y
+    rays.push({ o: ref, d: { x: ex, y: ey } }, { o: ref, d: { x: -ey, y: ex } })
+  }
+  let best: { p: Pt; o: Pt } | null = null, bd = 10 / view.s
+  for (const { o, d } of rays) {
+    const den = dx * d.y - dy * d.x
+    if (Math.abs(den) < 1e-9 * Math.hypot(dx, dy) * Math.hypot(d.x, d.y)) continue
+    const t = ((o.x - a.x) * d.y - (o.y - a.y) * d.x) / den
+    const q = { x: a.x + t * dx, y: a.y + t * dy }
+    if (dist(q, cur) < bd && dist(q, o) > 1e-6) { bd = dist(q, cur); best = { p: q, o } }
+  }
+  if (!best) return
+  cur = best.p; snapHit = { p: best.p, l: 'intersect' }
+  infer.push({ a: best.o, b: best.p, l: 'align' })
+}
+/** Lean the cursor onto: parallel/perpendicular to refEdge, or the x / y of a point we rested on earlier. */
+function inferCur(ref: Pt | null) {
+  infer = []
+  if (ref && !axisHit) for (const [a, b] of refEdges) {
+    const ang = Math.atan2(b.y - a.y, b.x - a.x)
+    const vx = cur.x - ref.x, vy = cur.y - ref.y
+    if (Math.hypot(vx, vy) * view.s > 14) {
+      for (const [off, l] of [[0, 'parallel'], [Math.PI, 'parallel'], [Math.PI / 2, 'perpendicular'], [-Math.PI / 2, 'perpendicular']] as const) {
+        const ux = Math.cos(ang + off), uy = Math.sin(ang + off), along = vx * ux + vy * uy
+        if (along > 0 && Math.abs(vx * uy - vy * ux) * view.s < 6) { cur = { x: ref.x + ux * along, y: ref.y + uy * along }; infer.push({ a: ref, b: cur, l }); return }
+      }
+    }
+  }
+  const tol = 8 / view.s
+  let ax: Pt | null = null, ay: Pt | null = null
+  for (const q of touched) {
+    if (axisHit?.axis !== 'v' && Math.abs(q.x - cur.x) < tol && (!ax || Math.abs(q.x - cur.x) < Math.abs(ax.x - cur.x))) ax = q
+    if (axisHit?.axis !== 'h' && Math.abs(q.y - cur.y) < tol && (!ay || Math.abs(q.y - cur.y) < Math.abs(ay.y - cur.y))) ay = q
+  }
+  if (ax) cur = { x: ax.x, y: cur.y }
+  if (ay) cur = { x: cur.x, y: ay.y }
+  if (ax) infer.push({ a: ax, b: cur, l: 'align' })
+  if (ay) infer.push({ a: ay, b: cur, l: 'align' })
 }
 // revealed points stay while the cursor is inside the shape (or 30px around it)
 function inZone(s: Shape | undefined, p: Pt) {
@@ -377,6 +462,10 @@ function pick(p: Pt, only?: Shape['t']) {
   shapes.forEach((s, i) => { if ((only && s.t !== only) || !isVisible(s) || isLocked(s) || (openGroup && s.g !== openGroup)) return; const d = shapeDist(s, p); if (d < bd) { bd = d; best = i } })
   return best
 }
+function guideAt(p: Pt): [Pt, Pt] | null {
+  for (const s of shapes) if (s.t === 'guide' && isVisible(s) && Math.abs((p.x - s.p.x) * -s.d.y + (p.y - s.p.y) * s.d.x) < 8 / view.s) return [s.p, { x: s.p.x + s.d.x, y: s.p.y + s.d.y }]
+  return null
+}
 function edgeAt(p: Pt): [Pt, Pt] | null {
   let best: [Pt, Pt] | null = null, bd = 8 / view.s
   for (const s of shapes) if (isVisible(s)) for (const [a, b] of straightEdges(s)) { const d = segDist(p, a, b); if (d < bd) { bd = d; best = [a, b] } }
@@ -387,6 +476,7 @@ function contains(s: Shape, p: Pt) {
   if (s.t === 'circle' || s.t === 'arc') return dist(p, s.c) < s.r
   if (s.t === 'poly') return Array.from({ length: s.n }, (_, k) => s.rot + Math.PI / s.n + (2 * Math.PI * k) / s.n)
     .every((a) => (p.x - s.c.x) * Math.cos(a) + (p.y - s.c.y) * Math.sin(a) <= s.ap)
+  if ((s.t === 'pl' || s.t === 'bz') && s.closed) return pointInside(s, p)
   return false
 }
 
@@ -401,7 +491,7 @@ function commitEdit(fn: () => void) {
 function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); shapes = JSON.parse(undoStack.pop()!); setSel([]); reveal = -1; cancel(); refresh() }
 function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); shapes = JSON.parse(redoStack.pop()!); setSel([]); reveal = -1; cancel(); refresh() }
 function cancel() {
-  start = null; dimB = null; filletIdx = -1; moveSet = []; offsetIdx = -1; marquee = null; apts = []; penNodes = []; penDrag = false; free = null; nodeDrag = null; segDrag = null; nodeSel = -1; tapeEdge = null; tapeHover = null
+  start = null; dimB = null; filletIdx = -1; moveSet = []; offsetIdx = -1; marquee = null; apts = []; penNodes = []; penDrag = false; free = null; nodeDrag = null; segDrag = null; nodeSel = -1; tapeEdge = null; tapeHover = null; arcSweep = 0; arcEnd = null; radialIdx = -1; touched = []; refEdges = []; infer = []
   prot = []; protRes = null; tapeRes = null; check = null; typed = ''; typedAng = ''; angMode = false; hideTextBox()
 }
 
@@ -419,6 +509,10 @@ function moveVec(): { dx: number; dy: number } {
   if (n.length && isFinite(n[0])) { const L = Math.hypot(dx, dy) || 1; dx = (dx / L) * n[0]; dy = (dy / L) * n[0] }
   return { dx, dy }
 }
+let textSize = 6 // height for new text / dimension labels; follows the last size you typed in the properties
+let radialIdx = -1 // radius / diameter label: the circle or arc picked
+let arcSweep = 0, arcLastAng = 0 // arc tool: signed sweep, followed as the mouse goes round (either way, up to a full circle)
+let arcEnd: Pt | null = null
 let fcorner: Pt = { x: 0, y: 0 }
 function offsetSigned(s: Shape, k: number): Shape | null {
   // k > 0 pulls the edge inward, k < 0 pushes it outward
@@ -428,6 +522,10 @@ function offsetSigned(s: Shape, k: number): Shape | null {
   }
   if (s.t === 'circle' || s.t === 'arc') return s.r - k > 1e-6 ? { ...s, r: s.r - k } : null
   if (s.t === 'poly') return s.ap - k > 1e-6 ? { ...s, ap: s.ap - k } : null
+  if ((s.t === 'pl' || s.t === 'bz') && s.closed) { // closed polyline / curve: offset its outline (a curve comes back as a fine polyline)
+    const q = offsetPoly(s.t === 'pl' ? s.pts : bzEdges(s).map(([a]) => a), k)
+    return q ? { t: 'pl', pts: q, closed: true, tag: s.tag, g: s.g } : null
+  }
   return null
 }
 function previewShape(): Shape | null {
@@ -459,6 +557,22 @@ function previewShape(): Shape | null {
     offsetMag = mag
     return offsetSigned(s, contains(s, cur) ? mag : -mag)
   }
+  if (tool === 'radial') {
+    const s = shapes[radialIdx]
+    if (!s || (s.t !== 'circle' && s.t !== 'arc')) return null
+    const { c, r } = s, dx = cur.x - c.x, dy = cur.y - c.y
+    const diameter = (s.t === 'circle') !== shift // circles read as diameter, arcs as radius; Shift swaps
+    // an ordinary dimension that sits beside the shape: above / below it for a horizontal one, left / right for a vertical one
+    const horiz = Math.abs(dy) >= Math.abs(dx), sg = (horiz ? dx : dy) >= 0 ? 1 : -1
+    if (diameter) {
+      return horiz
+        ? { t: 'dim', kind: 'diam', a: { x: c.x - r, y: c.y }, b: { x: c.x + r, y: c.y }, off: dy, size: textSize }
+        : { t: 'dim', kind: 'diam', a: { x: c.x, y: c.y - r }, b: { x: c.x, y: c.y + r }, off: -dx, size: textSize }
+    }
+    return horiz
+      ? { t: 'dim', kind: 'rad', a: c, b: { x: c.x + sg * r, y: c.y }, off: sg * dy, size: textSize }
+      : { t: 'dim', kind: 'rad', a: c, b: { x: c.x, y: c.y + sg * r }, off: -sg * dx, size: textSize }
+  }
   if (tool === 'tape') {
     if (!start) return null
     if (!tapeEdge) return { t: 'line', a: start, b: lockAxis(start, cur) }
@@ -474,7 +588,7 @@ function previewShape(): Shape | null {
     if (!dimB) return { t: 'line', a: start, b: cur }
     const dx = dimB.x - start.x, dy = dimB.y - start.y, L = Math.hypot(dx, dy) || 1
     const off = ((cur.x - start.x) * -dy + (cur.y - start.y) * dx) / L
-    return { t: 'dim', a: start, b: dimB, off, size: 5 }
+    return { t: 'dim', a: start, b: dimB, off, size: textSize }
   }
   if (tool === 'leader') return start ? { t: 'line', a: start, b: cur } : null
   if (!start) return null
@@ -515,9 +629,9 @@ function arcPreview(): Shape | null {
     const c = P[0], r = dist(c, P[1])
     if (r < 1e-9) return null
     const a0 = Math.atan2(P[1].y - c.y, P[1].x - c.x)
-    let sw = has ? (raw * Math.PI) / 180 : normA(Math.atan2(E.y - c.y, E.x - c.x) - a0)
-    if (!has && shift) sw -= TAU
-    if (!sw) return null
+    const sw = has ? (raw * Math.PI) / 180 : arcSweep
+    arcEnd = { x: c.x + r * Math.cos(a0 + sw), y: c.y + r * Math.sin(a0 + sw) }
+    if (Math.abs(sw) < 1e-9) return null
     return { t: 'arc', c, r, a0: sw >= 0 ? a0 : a0 + sw, a1: sw >= 0 ? a0 + sw : a0 }
   }
   if (tool === 'arc2') {
@@ -603,10 +717,11 @@ function commit() {
   if (tool === 'fillet') { commitEdit(() => (shapes[filletIdx] = pv)); filletIdx = -1; typed = ''; return }
   if (tool === 'offset') { commitEdit(() => shapes.push(tagged(pv))); offsetIdx = -1; typed = ''; return }
   if (tool === 'tape') { commitEdit(() => shapes.push(pv)); start = null; tapeEdge = null; typed = ''; return }
+  if (tool === 'radial') { commitEdit(() => shapes.push(tagged(pv))); radialIdx = -1; return }
   if (tool === 'dim') { if (dimB && pv.t === 'dim') { commitEdit(() => shapes.push(tagged(pv))); start = dimB = null } return }
   if (isEmpty(pv)) return
-  commitEdit(() => shapes.push(tagged(pv)))
-  setSel([shapes.length - 1])
+  commitEdit(() => { shapes.push(tagged(pv)); if (tool === 'line') shapes = weldLast(shapes) })
+  reveal = -1; setSel([shapes.length - 1])
   start = pv.t === 'line' && !effCenter() ? pv.b : null // plain lines chain
   typed = ''; typedAng = ''; angMode = false
 }
@@ -623,7 +738,7 @@ tb.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && pending && tb.value.trim()) {
     const { p, tip } = pending, s = tb.value
     hideTextBox()
-    commitEdit(() => shapes.push(tagged({ t: 'text', p, s, size: 6, tip })))
+    commitEdit(() => shapes.push(tagged({ t: 'text', p, s, size: textSize, tip })))
     setSel([shapes.length - 1]); refresh()
   } else if (e.key === 'Escape') hideTextBox()
 })
@@ -638,7 +753,7 @@ function readColors() {
 const label = (mm: number) => fmt(mm)
 /** What leaves the app: components expanded, hidden layers and sheet frames dropped, kerf applied if the user turned it on. */
 const outShapes = (): Shape[] => {
-  const l = flat(shapes).filter((s) => !(s.t === 'rect' && s.sheet))
+  const l = flat(shapes).filter((s) => !(s.t === 'rect' && s.sheet) && !(laser.on && s.fo))
   return laser.on ? kerfApply(l, laser) : l
 }
 /** Pieces that can go on separate pages: each group, each component copy, and everything else together. */
@@ -660,7 +775,8 @@ function outUnits(): Unit[] {
 }
 const outColor = () => (laser.on && laser.colors ? laserColor : null)
 const ACI = ['', '#e53935', '#f9a825', '#43a047', '#00acc1', '#1e88e5', '#d81b60', ''] // layer colours (AutoCAD index 1-6); 0 and 7 follow the theme
-function stroke(s: Shape, color: string, w: number, dash: number[] = []) { drawShape(ctx, s, view, { color, w, dash, label }) }
+let skipFill = false // fills are painted in a first pass so a bucket region never hides outlines
+function stroke(s: Shape, color: string, w: number, dash: number[] = []) { drawShape(ctx, s, view, { color, w, dash, label, noFill: skipFill, paper: col.paper }) }
 function marker(p: Pt, l: SnapKey) {
   const x = sx(p.x), y = sy(p.y)
   const c = l === 'endpoint' || l === 'quadrant' ? col['snap-pt'] : l === 'midpoint' || l === 'center' ? col['snap-mid'] : col['snap-edge']
@@ -669,6 +785,7 @@ function marker(p: Pt, l: SnapKey) {
   if (l === 'endpoint') ctx.rect(x - 5, y - 5, 10, 10) // square
   else if (l === 'midpoint') { ctx.moveTo(x, y - 6); ctx.lineTo(x + 6, y + 5); ctx.lineTo(x - 6, y + 5); ctx.closePath() } // triangle
   else if (l === 'quadrant') { ctx.moveTo(x, y - 6); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 6); ctx.lineTo(x - 6, y); ctx.closePath() } // diamond
+  else if (l === 'intersect') { ctx.moveTo(x - 6, y - 6); ctx.lineTo(x + 6, y + 6); ctx.moveTo(x + 6, y - 6); ctx.lineTo(x - 6, y + 6); ctx.strokeStyle = c; ctx.lineWidth = 2.5; ctx.stroke(); return } // cross
   else ctx.arc(x, y, l === 'center' ? 6 : 4.5, 0, Math.PI * 2) // circle
   ctx.fill(); ctx.stroke()
   if (l === 'center') { ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fillStyle = col.paper; ctx.fill() } // ring
@@ -777,12 +894,15 @@ function draw() {
   }
   const paintOne = (s: Shape, i: number, isHover: boolean) => {
     if (moveSet.includes(i) && (start || apts.length)) return stroke(s, col['ink-2'], 1, [3, 4]) // ghost of original
-    const on = selSet.has(i) || isHover
-    const color = s.t === 'guide' ? col.guide : isHover && tool === 'eraser' ? col.warn : on ? col.accent : s.t === 'image' ? col['ink-2'] : (ACI[tagOf(s).color] || col.shape)
+    const on = selSet.has(i) || (isHover && tool !== 'eraser')
+    const color = s.t === 'guide' ? col.guide : on ? col.accent : s.t === 'image' ? col['ink-2'] : (ACI[tagOf(s).color] || col.shape)
     stroke(s, color, on ? 2.25 : s.t === 'guide' ? 1 : 1.5)
   }
   shapes.forEach((s, i) => s.t === 'image' && paint(s, i)) // underlay first
+  for (const fo of [false, true]) for (const s of shapes) if (isVisible(s) && !!s.fo === fo) drawShape(ctx, s, view, { color: col.shape, w: 1, label, fillOnly: true, paper: col.paper })
+  skipFill = true
   shapes.forEach((s, i) => s.t !== 'image' && paint(s, i))
+  skipFill = false
   // centre marks on circles and polygons so you can see what a line is attached to
   ctx.strokeStyle = col['snap-mid']; ctx.lineWidth = 1
   for (const s of shapes) if (isVisible(s) && (s.t === 'circle' || s.t === 'poly' || s.t === 'arc')) {
@@ -819,6 +939,28 @@ function draw() {
     ctx.save(); ctx.strokeStyle = axis === 'h' ? col['snap-edge'] : col['snap-pt']; ctx.lineWidth = 1.5; ctx.setLineDash([2, 4])
     ctx.beginPath(); ctx.moveTo(sx(ref.x), sy(ref.y)); ctx.lineTo(sx(cur.x), sy(cur.y)); ctx.stroke(); ctx.restore()
     if (!snapHit) tag(tr(axis === 'h' ? 'axisH' : 'axisV'), sx(cur.x) + 12, sy(cur.y) + 26)
+  }
+  for (const g of infer) {
+    ctx.save(); ctx.strokeStyle = g.l === 'align' ? col['snap-mid'] : col['snap-edge']; ctx.lineWidth = 1.5; ctx.setLineDash([2, 4])
+    ctx.beginPath(); ctx.moveTo(sx(g.a.x), sy(g.a.y)); ctx.lineTo(sx(g.b.x), sy(g.b.y)); ctx.stroke(); ctx.restore()
+    if (!snapHit) tag(tr(g.l), sx(g.b.x) + 12, sy(g.b.y) + 26)
+    else marker(g.a, 'endpoint')
+  }
+  if (tool === 'arc' && apts.length === 2) {
+    const c = apts[0], r = dist(c, apts[1])
+    ctx.save(); ctx.strokeStyle = col['ink-2']; ctx.globalAlpha = 0.5; ctx.lineWidth = 1; ctx.setLineDash([2, 5])
+    ctx.beginPath(); ctx.arc(sx(c.x), sy(c.y), r * view.s, 0, TAU); ctx.stroke(); ctx.restore()
+    previewShape() // keeps arcEnd current
+    if (arcEnd) stroke({ t: 'line', a: c, b: arcEnd }, col.accent, 1, [4, 3])
+  }
+  if (tool === 'stext' && textCache.length) {
+    ctx.save(); ctx.globalAlpha = 0.75
+    textCache.forEach((q) => stroke(translate(q, cur.x, cur.y), col.accent, 1.25))
+    ctx.restore()
+  }
+  if (tool === 'eraser') { // only the stretch that will go
+    if (hover >= 0 && shapes[hover]) stroke(erasedPart(shapes, hover, cur) ?? shapes[hover], col.warn, 2.75)
+    eraseGhosts.forEach((g) => stroke(g, col.accent, 2.75))
   }
   if (marquee) {
     const { a, b } = marquee
@@ -892,7 +1034,7 @@ const ICONS: Record<ToolBtn, string> = {
   offset: '<rect x="3" y="4" width="14" height="12" rx="2.5"/><rect x="6.5" y="7.5" width="7" height="5" rx="1" stroke-dasharray="2 2"/>',
   fillet: '<path d="M4 16V9a5 5 0 015-5h7"/><path d="M4 16h4M16 4v4" stroke-dasharray="1 2.5"/>',
   move: '<path d="M10 2.5v15M2.5 10h15M10 2.5L8 4.5M10 2.5l2 2M10 17.5l-2-2M10 17.5l2-2M2.5 10l2-2M2.5 10l2 2M17.5 10l-2-2M17.5 10l-2 2"/>',
-  tape: '<path d="M3 14l9-9 3 3-9 9z"/><path d="M7 10l2 2M9 8l2 2"/>',
+  tape: '<rect x="2.5" y="5.5" width="9.5" height="9.5" rx="2.5"/><circle cx="7.25" cy="10.25" r="1.6"/><path d="M12 13h5.5v-3M14.2 13v-1.4M16.2 13v-1.4"/>',
   protractor: '<path d="M3 15a7 7 0 0114 0z"/><path d="M10 15V9M10 15l4-4"/>',
   dim: '<path d="M3 15h14M3 12v6M17 12v6M7 7h6"/><path d="M5 7l2-1.5v3zM15 7l-2-1.5v3z"/>',
   arc: '<circle cx="4" cy="16" r="1.3"/><path d="M4 16V8"/><path d="M4 8a8 8 0 018 8" stroke-dasharray="1 0"/>',
@@ -906,14 +1048,17 @@ const ICONS: Record<ToolBtn, string> = {
   pencil: '<path d="M3 17c3-1 4-5 7-4s3-6 7-9"/><path d="M13 3l4 4-7 7H6v-4z" transform="translate(0 2) scale(.6) translate(4 -1)"/>',
   node: '<path d="M5 3l9 7-4 1.2 1.6 4.3-1.9.7-1.6-4.3L5 14z"/><rect x="13" y="12.5" width="4" height="4" rx="0.5"/>',
   text: '<path d="M5 5h10M10 5v10M8 15h4"/>',
+  bucket: '<path d="M4 11l6-6 6 6-5.5 5.5a1.4 1.4 0 01-2 0z"/><path d="M4 11h12"/><path d="M9 5.5V4a1.5 1.5 0 013 0"/><path d="M17 13.5c1 1.5 1.5 2.3 1.5 3a1.5 1.5 0 01-3 0c0-.7.5-1.5 1.5-3z"/>',
+  stext: '<path d="M3 15V6.5a2.5 2.5 0 015 0V15M3 11h5"/><path d="M13 6v9M13 9.5c0-1.5 1-2.5 2.5-2.5S17.5 8 17.5 9.5V15" />',
+  radial: '<circle cx="9" cy="11" r="6"/><path d="M9 11l4.2-4.2M13.2 6.8l.2 2.4M13.2 6.8l-2.4-.2"/><path d="M15 4h3"/>',
   leader: '<path d="M3 16l5-5M3 16l.5-3M3 16l3-.5"/><path d="M10 4h7M13.5 4v5"/>',
 }
 const ACT_ICONS = {
   flipH: '<path d="M10 2.5v15" stroke-dasharray="2 2"/><path d="M8 5L3 15h5z"/><path d="M12 5l5 10h-5z"/>',
   flipV: '<path d="M2.5 10h15" stroke-dasharray="2 2"/><path d="M5 8L15 3v5z"/><path d="M5 12l10 5v-5z"/>',
 }
-const KEYS: Record<ToolBtn, string> = { select: 'V', eraser: 'E', line: 'L', rect: 'R', circle: 'C', arc: 'A', arc2: '', arc3: '', poly: 'P', offset: 'O', fillet: 'F', move: 'M', rotate: 'Q', scale: 'S', reflect: 'I', tape: 'T', protractor: 'G', dim: 'D', text: 'X', leader: 'K', pen: 'B', penline: '', pencil: 'H', node: 'N' }
-const ORDER: (ToolBtn | 'flipH' | 'flipV' | '|')[] = ['select', 'eraser', '|', 'line', 'rect', 'circle', 'poly', '|', 'move', 'rotate', 'scale', 'reflect', 'flipH', 'flipV', 'offset', 'fillet', '|', 'tape', 'protractor', 'dim', 'text', 'leader', '|', 'pen', 'node']
+const KEYS: Record<ToolBtn, string> = { select: 'V', eraser: 'E', line: 'L', rect: 'R', circle: 'C', arc: 'A', arc2: '', arc3: '', poly: 'P', offset: 'O', fillet: 'F', move: 'M', rotate: 'Q', scale: 'S', reflect: 'I', tape: 'T', protractor: 'G', dim: 'D', text: 'X', leader: 'K', pen: 'B', penline: '', pencil: 'H', node: 'N', bucket: 'U', stext: 'W', radial: 'J' }
+const ORDER: (ToolBtn | 'flipH' | 'flipV' | '|')[] = ['select', 'eraser', '|', 'line', 'rect', 'circle', 'poly', '|', 'move', 'rotate', 'scale', 'reflect', 'flipH', 'flipV', 'offset', 'fillet', '|', 'tape', 'protractor', 'dim', 'radial', 'text', 'leader', '|', 'pen', 'node', 'bucket', '|', 'stext']
 const CIRCLE_GROUP: ToolBtn[] = ['circle', 'arc', 'arc2', 'arc3'] // the circle button opens a small menu with the arcs
 const PEN_GROUP: ToolBtn[] = ['pen', 'penline', 'pencil'] // curve pen / straight pen / freehand pencil
 const GROUPS: Record<string, ToolBtn[]> = { circle: CIRCLE_GROUP, pen: PEN_GROUP }
@@ -943,7 +1088,75 @@ function buildTools() {
   }))
 }
 document.addEventListener('click', (e) => { const f = document.getElementById('flyout'); if (f && !f.contains(e.target as Node)) f.hidden = true })
+// outline text panel
+let textCache: Shape[] = [] // the current text laid out at the origin
+const fontBytes = new Map<string, ArrayBuffer>()
+const textBar = document.createElement('div')
+textBar.className = 'textbar'; textBar.hidden = true
+textBar.innerHTML = `<textarea id="stxt" rows="2" spellcheck="false">ABC กขค</textarea>
+<select id="sfont" aria-label="Font">${FONTS.map((f) => `<option value="${f.id}">${f.name}</option>`).join('')}</select>
+<label><span data-i="stextSize"></span> <input id="ssize" type="number" min="1" step="1" value="20"></label>
+<label><input id="ssolid" type="checkbox"> <span data-i="stextSolid"></span></label>
+<label><input id="sbold" type="checkbox"> <span data-i="stextBold"></span></label>
+<button type="button" id="saddfont" class="btn" data-i="addFont"></button>
+<button type="button" id="srmfont" class="btn" data-i="rmFont" hidden></button>
+<input id="sfontfile" type="file" accept=".ttf,.otf" hidden>`
+document.querySelector('.stage')!.appendChild(textBar)
+// fonts the user added (.ttf / .otf): kept in the browser database, so they are there next time
+type UserFont = { id: string; name: string; bytes: ArrayBuffer }
+let userFonts: UserFont[] = []
+const sfont = () => $<HTMLSelectElement>('sfont')
+function fontOptions(select?: string) {
+  sfont().innerHTML = FONTS.map((f) => `<option value="${f.id}">${f.name}</option>`).join('') + userFonts.map((f) => `<option value="${f.id}">★ ${esc(f.name)}</option>`).join('')
+  if (select) sfont().value = select
+  $('srmfont').hidden = !userFonts.some((f) => f.id === sfont().value)
+}
+void kvGet<UserFont[]>('userFonts').then((l) => { if (l?.length) { userFonts = l; fontOptions() } }).catch(() => {})
+const saveUserFonts = () => kvSet('userFonts', userFonts).catch(() => toast(tr('badFont')))
+$('saddfont').onclick = () => $<HTMLInputElement>('sfontfile').click()
+$('sfontfile').onchange = async (e) => {
+  const inp = e.target as HTMLInputElement, f = inp.files?.[0]
+  inp.value = ''
+  if (!f) return
+  const bytes = await f.arrayBuffer(), id = 'u' + uid()
+  try { if (!layoutText('probe:' + id, bytes, 'Ag', 10).length) throw new Error('empty') } catch { return toast(`${tr('badFont')}: ${f.name}`) }
+  userFonts.push({ id, name: f.name.replace(/\.[^.]+$/, ''), bytes })
+  void saveUserFonts(); fontOptions(id); void rebuildText()
+}
+$('srmfont').onclick = () => {
+  userFonts = userFonts.filter((f) => f.id !== sfont().value)
+  void saveUserFonts(); fontOptions(FONTS[0].id); void rebuildText()
+}
+let textToken = 0
+async function rebuildText() {
+  const me = ++textToken, g = (id: string) => $<HTMLInputElement>(id)
+  $('srmfont').hidden = !userFonts.some((x) => x.id === sfont().value)
+  const uf = userFonts.find((x) => x.id === sfont().value), f = FONTS.find((x) => x.id === sfont().value) ?? FONTS[0]
+  const url = uf ? 'u:' + uf.id : g('sbold').checked ? f.bold : f.regular
+  const txt = g('stxt').value, size = parseFloat(g('ssize').value)
+  if (!txt.trim() || !(size > 0)) { textCache = []; return draw() }
+  let b = uf ? uf.bytes : fontBytes.get(url)
+  if (!b) { try { b = await (await fetch(url)).arrayBuffer() } catch { return } fontBytes.set(url, b) }
+  if (me !== textToken) return
+  try { textCache = textShapes(layoutText(url, b, txt, size), g('ssolid').checked, {}) } catch { textCache = [] }
+  draw()
+}
+textBar.addEventListener('input', () => void rebuildText())
+let bucketColor = '#1e88e5'
+const bucketBar = document.createElement('div')
+bucketBar.className = 'bucketbar'; bucketBar.hidden = true
+const SWATCHES = ['#e53935', '#fb8c00', '#fdd835', '#43a047', '#00acc1', '#1e88e5', '#8e24aa', '#d81b60', '#6d4c41', '#9e9e9e', '#212121', '#ffffff']
+bucketBar.innerHTML = SWATCHES.map((c) => `<button class="sw" data-c="${c}" style="background:${c}" aria-label="${c}"></button>`).join('') + '<input type="color" aria-label="Custom colour">'
+const bucketIn = bucketBar.querySelector('input')!
+const pickColor = (c: string) => { bucketColor = c; bucketIn.value = c; bucketBar.querySelectorAll<HTMLElement>('.sw').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.c === c))) }
+bucketBar.onclick = (e) => { const c = (e.target as HTMLElement).dataset.c; if (c) pickColor(c) }
+bucketIn.oninput = () => pickColor(bucketIn.value)
+document.querySelector('.stage')!.appendChild(bucketBar)
+pickColor(bucketColor)
 function setTool(t: Tool) {
+  bucketBar.hidden = t !== 'bucket'
+  textBar.hidden = t !== 'stext'
+  if (t === 'stext') { $('stxt').setAttribute('placeholder', tr('stextPh')); void rebuildText() }
   if (isPen() && penNodes.length > 1) finishPen(false) // keep a half-drawn path
   tool = t; cancel(); hover = -1
   if (!['select', 'move', 'rotate', 'scale', 'node', 'reflect'].includes(t)) setSel([])
@@ -955,6 +1168,7 @@ function hint() {
     tool === 'dim' ? (dimB ? 2 : start ? 1 : 0)
     : tool === 'fillet' ? (filletIdx >= 0 ? 1 : 0)
     : tool === 'offset' ? (offsetIdx >= 0 ? 1 : 0)
+    : tool === 'radial' ? (radialIdx >= 0 ? 1 : 0)
     : tool === 'protractor' ? prot.length
     : tool === 'tape' ? (tapeEdge ? 2 : start ? 1 : 0)
     : ['arc', 'arc2', 'arc3', 'rotate', 'scale', 'reflect'].includes(tool) ? apts.length
@@ -1053,6 +1267,7 @@ function buildProps() {
   const s = shapes[sel]
   if (!s) { props.innerHTML = `<p class="empty">${tr('empty')}</p>`; return }
   const fillRow = fillable(s) ? `<label>${tr('fillL')}<span class="fillrow"><input type="color" data-f="fillc" value="${/^#[0-9a-f]{6}$/i.test(s.fill ?? '') ? s.fill : '#1e88e5'}"><button class="btn" data-f="fillx">${tr('noFill')}</button></span></label>` : ''
+  const inkRow = s.t === 'text' || s.t === 'dim' ? `<label>${tr('colorL')}<span class="fillrow"><input type="color" data-f="inkc" value="${/^#[0-9a-f]{6}$/i.test(s.color ?? '') ? s.color : '#222222'}"><button class="btn" data-f="inkx">${tr('colorAuto')}</button></span></label>` : ''
   const tagSel = `<label>${tr('tagL')}<select data-f="tag">${tags.map((t) => `<option value="${t.id}"${(s.tag ?? '0') === t.id ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>`
   let h = ''
   if (selSet.size > 1) { h = `<p class="note">${selSet.size} ${tr('nSel')}</p>` + fillRow + tagSel; wireProps(); return }
@@ -1063,8 +1278,8 @@ function buildProps() {
   else if (s.t === 'circle') h += field('diameter', 'd', s.r * 2)
   else if (s.t === 'arc') h += field('radius', 'r', s.r) + `<label>${tr('startAng')}<input data-f="a0" value="${+deg(s.a0).toFixed(3)}"></label><label>${tr('endAng')}<input data-f="a1" value="${+deg(s.a0 + sweepOf(s)).toFixed(3)}"></label>`
   else if (s.t === 'poly') h += field('flat', 'flat', s.ap * 2) + `<label>${tr('sides')}<input data-f="n" value="${s.n}" inputmode="numeric"></label>`
-  else if (s.t === 'text') h += `<label>${tr('content')}<input data-f="s" value="${s.s.replace(/"/g, '&quot;')}"></label>` + field('size', 'size', s.size)
-  else if (s.t === 'dim') h += field('offsetf', 'off', s.off) + field('size', 'size', s.size)
+  else if (s.t === 'text') h += inkRow + `<label>${tr('content')}<input data-f="s" value="${s.s.replace(/"/g, '&quot;')}"></label>` + field('size', 'size', s.size)
+  else if (s.t === 'dim') h += inkRow + field('offsetf', 'off', s.off) + field('size', 'size', s.size)
   else if (s.t === 'pl') h += `<p class="note">${tr('vertices')}: ${s.pts.length} · ${s.closed ? tr('closedL') : tr('openL')}</p>`
   else if (s.t === 'bz') h += `<p class="note">${tr('nodesL')}: ${s.nodes.length} · ${s.closed ? tr('closedL') : tr('openL')}</p>`
   else if (s.t === 'guide') h += `<p class="note">${tr('guideL')}</p>`
@@ -1088,6 +1303,10 @@ function applyField(f: string, raw: string) {
     const ix = [...selSet].filter((i) => fillable(shapes[i]))
     return commitEdit(() => ix.forEach((i) => { if (f === 'fillx') delete shapes[i].fill; else shapes[i].fill = raw }))
   }
+  if (f === 'inkc' || f === 'inkx') {
+    const ix = [...selSet].filter((i) => shapes[i].t === 'text' || shapes[i].t === 'dim')
+    return commitEdit(() => ix.forEach((i) => { const q = shapes[i] as Shape & { color?: string }; if (f === 'inkx') delete q.color; else q.color = raw }))
+  }
   if (f === 'tag') {
     const ix = [...selSet]
     return commitEdit(() => ix.forEach((i) => { if (raw === '0') delete shapes[i].tag; else shapes[i].tag = raw }))
@@ -1109,8 +1328,8 @@ function applyField(f: string, raw: string) {
     } else if (s.t === 'circle') { if (mm > 0) s.r = mm / 2 }
     else if (s.t === 'arc') { if (f === 'r' && mm > 0) s.r = mm; if (f === 'a0') { const sw = sweepOf(s); s.a0 = (v * Math.PI) / 180; s.a1 = s.a0 + sw } if (f === 'a1') s.a1 = (v * Math.PI) / 180 }
     else if (s.t === 'poly') { if (f === 'flat' && mm > 0) s.ap = mm / 2; if (f === 'n') s.n = Math.max(3, Math.min(64, Math.round(v))) }
-    else if (s.t === 'text') { if (f === 's' && raw.trim()) s.s = raw; if (f === 'size' && mm > 0) s.size = mm }
-    else if (s.t === 'dim') { if (f === 'off') s.off = mm; else if (mm > 0) s.size = mm }
+    else if (s.t === 'text') { if (f === 's' && raw.trim()) s.s = raw; if (f === 'size' && mm > 0) s.size = textSize = mm }
+    else if (s.t === 'dim') { if (f === 'off') s.off = mm; else if (mm > 0) s.size = textSize = mm }
     else if (s.t === 'inst') { if (f === 'x') s.x = mm; if (f === 'y') s.y = mm }
     else if (s.t === 'image') {
       const asp = s.h / s.w
@@ -1228,16 +1447,28 @@ $('pngGo').onclick = exportPng
 // ---------- events ----------
 let panning: { x: number; y: number } | null = null
 let spaceDown = false
-let erasing = false, erased = false
+let erasing = false
 const mouse = (e: { clientX: number; clientY: number }): Pt => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top } }
-function eraseAt(p: Pt) {
+let erasePts: Pt[] = [] // spots the eraser passed over; nothing is deleted until the button is released
+let eraseGhosts: Shape[] = [] // the stretches that will be removed when the button is released
+function markErase(p: Pt) {
   const i = pick(p)
   if (i < 0) return
-  if (!erased) { undoStack.push(snapshot()); redoStack.length = 0; erased = true }
-  const rep = trimErase(shapes, i, p) // crossing shapes: remove just the stretch between crossings
-  if (rep) shapes.splice(i, 1, ...rep); else shapes.splice(i, 1); setSel([]); hover = -1; reveal = -1; refresh()
+  erasePts.push(p); eraseGhosts.push(erasedPart(shapes, i, p) ?? shapes[i]); draw()
 }
-const pickingNow = () => ['select', 'eraser', 'fillet', 'offset'].includes(tool) || (tool === 'move' && !start)
+function applyErase() {
+  const pts = erasePts; erasePts = []; eraseGhosts = []
+  if (!pts.length) return draw()
+  undoStack.push(snapshot()); redoStack.length = 0
+  for (const p of pts) {
+    const i = pick(p)
+    if (i < 0) continue
+    const rep = trimErase(shapes, i, p) // crossing shapes: remove just the stretch between crossings
+    if (rep) shapes.splice(i, 1, ...rep); else shapes.splice(i, 1)
+  }
+  setSel([]); hover = -1; reveal = -1; refresh()
+}
+const pickingNow = () => ['select', 'eraser', 'fillet', 'offset', 'bucket'].includes(tool) || (tool === 'radial' && radialIdx < 0) || (tool === 'move' && !start)
 const POINT_SNAPS: SnapKey[] = ['endpoint', 'midpoint', 'center', 'quadrant']
 
 cv.addEventListener('pointermove', (e) => {
@@ -1273,9 +1504,19 @@ cv.addEventListener('pointermove', (e) => {
       else if (Math.abs(dx) < 8) { cur = { x: ref.x, y: cur.y }; axisHit = { ref, axis: 'v' } }
     }
   }
+  infer = []
+  if (tool === 'arc' && apts.length === 2) arcFollow(raw)
+  if (picking) touched = []
+  else if (snapHit?.ln) inferOnLine(snapHit.ln, axisRef())
+  else if (!snapHit) {
+    const r0 = axisRef()
+    if (!r0) refEdges = []; else for (const e of [guideAt(r0), edgeAt(r0), guideAt(raw), edgeAt(raw)]) if (e && !refEdges.some((f) => f[0] === e[0] && f[1] === e[1])) refEdges = [...refEdges.slice(-3), e]
+    inferCur(ref)
+  }
+  if (snapHit && (POINT_SNAPS.includes(snapHit.l) || snapHit.l === 'intersect')) { const q = snapHit.p; if (!touched.some((t) => dist(t, q) < 1e-6)) touched = [...touched.slice(-5), q] }
   hover = picking && !(tool === 'offset' && offsetIdx >= 0) ? pick(raw, tool === 'fillet' ? 'rect' : undefined) : -1
   tapeHover = tool === 'tape' && !start && !(snapHit && POINT_SNAPS.includes(snapHit.l)) ? edgeAt(raw) : null
-  if (erasing) eraseAt(raw)
+  if (erasing) markErase(raw)
   if (!picking) updateDwell(raw)
   $('coord').textContent = `${fmt(cur.x)}, ${fmt(cur.y)} ${unit}`
   draw()
@@ -1356,7 +1597,38 @@ cv.addEventListener('pointerdown', (e) => {
     if (conv && shapes[i].t !== 'bz') commitEdit(() => (shapes[i] = conv))
     setSel([i]); return refresh()
   }
-  if (tool === 'eraser') { erasing = true; erased = false; eraseAt(p); return }
+  if (tool === 'eraser') { erasing = true; markErase(p); return }
+  if (tool === 'radial') {
+    if (radialIdx >= 0) return commit()
+    const i = Math.max(pick(p, 'circle'), pick(p, 'arc'))
+    if (i < 0) return
+    radialIdx = i; setSel([i]); return refresh()
+  }
+  if (tool === 'stext') {
+    if (!textCache.length) return toast(tr('typeText'))
+    const g = Math.max(0, ...shapes.map((q) => q.g ?? 0)) + 1, at = cur
+    const add = textCache.map((q) => ({ ...translate(q, at.x, at.y), g, ...(activeTag === '0' ? {} : { tag: activeTag }) }) as Shape)
+    commitEdit(() => shapes.push(...add))
+    setSel(add.map((_, k) => shapes.length - add.length + k)); return refresh()
+  }
+  if (tool === 'bucket') {
+    let i = -1
+    shapes.forEach((q, k) => { if (fillable(q) && !q.fo && isVisible(q) && !isLocked(q) && (pointInside(q, p) || shapeDist(q, p) < 7 / view.s)) i = k })
+    const area = (q: Pt[]) => Math.abs(q.reduce((a, b, k) => { const c = q[(k + 1) % q.length]; return a + b.x * c.y - c.x * b.y }, 0)) / 2
+    const same = (a: number, b: number) => Math.abs(a - b) <= 1e-6 * Math.max(a, b) + 1e-9
+    const fo = shapes.findIndex((q) => q.fo && q.t === 'pl' && pointInside(q, p))
+    if (e.shiftKey) {
+      if (fo >= 0) commitEdit(() => shapes.splice(fo, 1)); else if (i >= 0) commitEdit(() => delete shapes[i].fill)
+      return
+    }
+    const face = faceAt(shapes, p) // the enclosed area: lines, arcs and other shapes can cut a shape into parts
+    const own = i >= 0 ? faceAt([shapes[i]], p) : null
+    if (i >= 0 && (!face || !own || same(area(face), area(own)))) return commitEdit(() => (shapes[i].fill = bucketColor)) // nothing cuts it: fill the shape itself
+    if (!face) return toast(tr('notClosed'))
+    if (fo >= 0 && same(area(face), area((shapes[fo] as Shape & { t: 'pl' }).pts))) return commitEdit(() => (shapes[fo].fill = bucketColor))
+    commitEdit(() => shapes.push(tagged({ t: 'pl', pts: face, closed: true, fill: bucketColor, fo: true })))
+    return
+  }
   if (tool === 'fillet') {
     if (filletIdx >= 0) return commit()
     const i = pick(p, 'rect')
@@ -1368,7 +1640,7 @@ cv.addEventListener('pointerdown', (e) => {
   if (tool === 'offset') {
     if (offsetIdx >= 0) return commit()
     const i = pick(p)
-    if (i < 0 || ['dim', 'text', 'guide', 'image', 'pl'].includes(shapes[i].t)) return
+    if (i < 0 || ['dim', 'text', 'guide', 'image'].includes(shapes[i].t) || ((shapes[i].t === 'pl' || shapes[i].t === 'bz') && !(shapes[i] as { closed: boolean }).closed)) return
     offsetIdx = i; setSel([i]); return refresh()
   }
   if (tool === 'move') {
@@ -1388,6 +1660,7 @@ cv.addEventListener('pointerdown', (e) => {
   }
   if (tool === 'arc' || tool === 'arc2' || tool === 'arc3') {
     apts.push(cur)
+    if (apts.length === 2 && tool === 'arc') { arcSweep = 0; arcLastAng = Math.atan2(apts[1].y - apts[0].y, apts[1].x - apts[0].x) }
     if (apts.length === 3) commit()
     return refresh()
   }
@@ -1428,7 +1701,8 @@ cv.addEventListener('pointerdown', (e) => {
   commit()
 })
 cv.addEventListener('pointerup', () => {
-  panning = null; erasing = false
+  panning = null
+  if (erasing) { erasing = false; applyErase() }
   if (nodeDrag) { nodeDrag = null; refresh() }
   if (segDrag) { segDrag = null; refresh() }
   penDrag = false
@@ -1451,7 +1725,7 @@ function finishMarquee() {
   })
   setSel([...(q.add ? selSet : []), ...hit]); refresh()
 }
-cv.addEventListener('contextmenu', (e) => e.preventDefault())
+document.addEventListener('contextmenu', (e) => e.preventDefault()) // no browser menu on top of ours
 cv.addEventListener('wheel', (e) => {
   e.preventDefault()
   const m = mouse(e)
@@ -1635,7 +1909,10 @@ let cleanData = '' // what the last saved / opened / new document looked like
 let lastWritten = ''
 let asTimer = 0
 let recoveryPending = true // never overwrite a recoverable autosave before the user has decided
-const markClean = () => { cleanData = snapshotProject(); lastWritten = '' }
+const markClean = (persist = true) => { // persist: remember this as "the last saved version" for crash recovery
+  cleanData = snapshotProject(); lastWritten = ''
+  if (persist) kvSet('saved', { ts: Date.now(), n: docShapes().length, data: cleanData }).catch(() => {})
+}
 function scheduleAutosave() { clearTimeout(asTimer); asTimer = window.setTimeout(() => void autosave(), 1500) }
 async function autosave() {
   if (recoveryPending) return
@@ -1658,18 +1935,48 @@ function applyProjectOpen(p: Project) {
 }
 async function offerRecovery() {
   let rec: { ts: number; dirty: boolean; n: number; data: string } | undefined
-  try { rec = await kvGet('autosave') } catch { recoveryPending = false; return }
-  if (!rec?.dirty || !rec.n) { recoveryPending = false; return }
+  try { rec = await kvGet('autosave') } catch { recoveryPending = false; markClean(); return }
+  if (!rec?.dirty || !rec.n) { recoveryPending = false; markClean(); return }
+  // the app did not close normally: offer the edited version, or the file as it was last saved
+  let sv: { ts: number; n: number; data: string } | undefined
+  try { sv = await kvGet('saved') } catch { /* none */ }
+  const hasSaved = !!sv?.n
   const dlg = $<HTMLDialogElement>('recd')
   dlg.oncancel = (e) => e.preventDefault() // Esc must not silently throw the work away
   $('recMsg').textContent = lang === 'th'
     ? `พบงานที่ยังไม่ได้บันทึกเมื่อ ${new Date(rec.ts).toLocaleString()} (${rec.n} ชิ้น) เพราะโปรแกรมถูกปิดก่อนบันทึก`
     : `Found unsaved work from ${new Date(rec.ts).toLocaleString()} (${rec.n} objects): the app closed before it was saved.`
-  $('recGo').onclick = () => { dlg.close(); recoveryPending = false; try { applyProjectOpen(parseProject(rec!.data)) } catch { toast(tr('badFile')) } }
-  $('recDiscard').onclick = () => { dlg.close(); recoveryPending = false; void kvSet('autosave', { ts: Date.now(), dirty: false, n: 0, data: '' }) }
+  if (hasSaved) $('recMsg').textContent += lang === 'th' ? ` · ไฟล์ที่บันทึกล่าสุดเมื่อ ${new Date(sv!.ts).toLocaleString()} (${sv!.n} ชิ้น) ยังอยู่` : ` · The last saved version from ${new Date(sv!.ts).toLocaleString()} (${sv!.n} objects) is still available.`
+  const recSaved = $('recSaved'); recSaved.hidden = !hasSaved
+  $('recGo').onclick = () => { dlg.close(); recoveryPending = false; try { applyProjectOpen(parseProject(rec!.data)) } catch { toast(tr('badFile')) } } // stays "unsaved": closing will ask to save
+  recSaved.onclick = () => { dlg.close(); recoveryPending = false; try { applyProjectOpen(parseProject(sv!.data)); markClean() } catch { toast(tr('badFile')) } }
+  $('recDiscard').onclick = () => { dlg.close(); recoveryPending = false; markClean(); void kvSet('autosave', { ts: Date.now(), dirty: false, n: 0, data: '' }) }
   dlg.showModal()
 }
 window.addEventListener('pagehide', () => void autosave())
+
+// ---------- closing: ask to save; only a crash leaves work to recover ----------
+const isDirty = () => snapshotProject() !== cleanData
+async function askClose(): Promise<boolean> { // true = go ahead and close
+  if (recoveryPending) return true // an unanswered recovery offer must survive
+  const exit = async () => { clearTimeout(asTimer); try { await kvSet('autosave', { ts: Date.now(), dirty: false, n: 0, data: '' }) } catch { /* ignore */ } return true }
+  if (!isDirty()) return exit()
+  const dlg = $<HTMLDialogElement>('closd')
+  if (dlg.open) return false
+  const choice = await new Promise<'save' | 'no' | 'cancel'>((res) => {
+    $('closeYes').onclick = () => res('save'); $('closeNo').onclick = () => res('no'); $('closeCancel').onclick = () => res('cancel')
+    dlg.oncancel = (e) => { e.preventDefault(); res('cancel') }
+    dlg.showModal()
+  })
+  dlg.close()
+  if (choice === 'cancel') return false
+  if (choice === 'save') { await saveProject(); if (isDirty()) return false } // save dialog cancelled: stay open
+  return exit()
+}
+if ('__TAURI_INTERNALS__' in window) {
+  const win = getCurrentWindow()
+  void win.onCloseRequested(async (ev) => { ev.preventDefault(); if (await askClose()) await win.destroy() })
+} else window.addEventListener('beforeunload', (e) => { if (isDirty()) e.preventDefault() })
 
 // ---------- split at crossings ----------
 function splitSel() {
@@ -1910,7 +2217,7 @@ const tray = initTray($('tray'), panelList, () => tr('close'))
 if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark'
 view.ox = 120; view.oy = innerHeight - 200
 applyLang()
-markClean()
+markClean(false) // the real baseline is stored once we know whether a recovery is pending
 void offerRecovery()
 
 // ponytail: tiny dev-only self-check of the pure helpers

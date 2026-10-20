@@ -152,7 +152,7 @@ const n3 = (n: number) => +n.toFixed(3)
 export function svgBody(shapes: Shape[], label: Label, stroke = '#111', sw = 0.25): string {
   const f = (p: Pt) => `${n3(p.x)},${n3(-p.y)}`
   const line = (a: Pt, b: Pt) => `<line x1="${n3(a.x)}" y1="${n3(-a.y)}" x2="${n3(b.x)}" y2="${n3(-b.y)}"/>`
-  const F = (s: Shape) => (s.fill ? ` fill="${esc(s.fill)}"` : '')
+  const F = (s: Shape) => (s.fill ? ` fill="${s.fill === 'paper' ? '#ffffff' : esc(s.fill)}"` : '')
   const text = (s: string, p: Pt, size: number, ang = 0, anchor = 'start') =>
     `<text x="${n3(p.x)}" y="${n3(-p.y)}" font-size="${n3(size)}" text-anchor="${anchor}" fill="${stroke}" stroke="none" font-family="Segoe UI, Leelawadee UI, sans-serif"${ang ? ` transform="rotate(${n3(-deg(ang))} ${n3(p.x)} ${n3(-p.y)})"` : ''}>${esc(s)}</text>`
   let o = `<g fill="none" stroke="${stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">`

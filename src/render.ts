@@ -3,7 +3,7 @@ import { type Pt, type Shape, polyVerts, dimGeom, dimText, leaderLines, images, 
 
 export type View = { ox: number; oy: number; s: number } // screen = o + world*s (y flipped)
 export const FONT = '"Segoe UI", "Leelawadee UI", sans-serif'
-export type Style = { color: string; w: number; dash?: number[]; label: (mm: number) => string; exact?: boolean }
+export type Style = { color: string; w: number; dash?: number[]; label: (mm: number) => string; exact?: boolean; fillOnly?: boolean; noFill?: boolean; paper?: string } // fillOnly / noFill: the canvas paints all fills first, then outlines
 
 const cache = new Map<string, HTMLImageElement>()
 export let onImageLoad: () => void = () => {}
@@ -43,6 +43,7 @@ export function shapePath(ctx: CanvasRenderingContext2D, s: Shape, v: View) {
 }
 
 export function drawShape(ctx: CanvasRenderingContext2D, s: Shape, v: View, st: Style) {
+  if (st.fillOnly && !s.fill && s.t !== 'inst') return
   const X = (x: number) => v.ox + x * v.s, Y = (y: number) => v.oy - y * v.s
   if (s.t === 'inst') { for (const c of expandInst(s)) drawShape(ctx, c, v, st); return }
   if (s.t === 'image') {
@@ -66,17 +67,20 @@ export function drawShape(ctx: CanvasRenderingContext2D, s: Shape, v: View, st: 
     ctx.fillText(`${st.label(s.w)} × ${st.label(s.h)}`, X(s.x) + 4, Y(s.y + s.h) - 3)
     return
   }
+  const ink = (s.t === 'text' || s.t === 'dim') && s.color && (st.w <= 2 || st.exact) ? s.color : st.color // own colour, unless highlighted
   shapePath(ctx, s, v)
-  if (s.fill && (s.t === 'rect' || s.t === 'circle' || s.t === 'poly' || (s.t === 'pl' && s.closed) || (s.t === 'bz' && s.closed))) { ctx.fillStyle = s.fill; ctx.fill() }
-  ctx.strokeStyle = st.color; ctx.lineWidth = st.w; ctx.setLineDash(s.t === 'guide' ? [8, 6] : (st.dash ?? [])); ctx.stroke(); ctx.setLineDash([])
+  if (s.fill && (s.t === 'rect' || s.t === 'circle' || s.t === 'poly' || (s.t === 'pl' && s.closed) || (s.t === 'bz' && s.closed))) { if (!st.noFill) { ctx.fillStyle = s.fill === 'paper' ? st.paper ?? '#fff' : s.fill; ctx.fill() } } // 'paper' = a hole in solid text
+  if (st.fillOnly) return
+  if (s.fo && st.w <= 2) return // bucket fill: colour only, outline appears when selected
+  ctx.strokeStyle = ink; ctx.lineWidth = st.w; ctx.setLineDash(s.t === 'guide' ? [8, 6] : (st.dash ?? [])); ctx.stroke(); ctx.setLineDash([])
   if (s.t === 'dim') {
     const g = dimGeom(s)
     ctx.save(); ctx.translate(X(g.mid.x), Y(g.mid.y)); ctx.rotate(-g.ang)
-    ctx.fillStyle = st.color; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
+    ctx.fillStyle = ink; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'
     ctx.font = `${s.drv ? '700 ' : ''}${st.exact ? s.size * v.s : Math.max(11, s.size * v.s)}px ${FONT}`
     ctx.fillText(dimText(s, st.label), 0, -3 * (st.exact ? v.s / 2 : 1)); ctx.restore()
   } else if (s.t === 'text') {
-    ctx.fillStyle = st.color; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'
+    ctx.fillStyle = ink; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'
     ctx.font = `${st.exact ? s.size * v.s : Math.max(6, s.size * v.s)}px ${FONT}`
     ctx.fillText(s.s, X(s.p.x), Y(s.p.y))
   }

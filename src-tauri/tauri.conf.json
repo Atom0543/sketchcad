@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "SketchCAD",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.sketchcad.app",
   "build": {
     "frontendDist": "../dist",
@@ -41,7 +41,16 @@
     "android": {
       "debugApplicationIdSuffix": ".debug"
     },
-    "shortDescription": "2D CAD for laser and robot parts"
+    "shortDescription": "2D CAD for laser and robot parts",
+    "publisher": "Atom0543",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "English"
+        ]
+      }
+    }
   },
   "mainBinaryName": "SketchCAD"
 }

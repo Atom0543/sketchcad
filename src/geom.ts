@@ -2,11 +2,11 @@
 export type Pt = { x: number; y: number }
 /** Points a dimension can be pinned to: a/b line ends, c circle centre, r rectangle corner i, p vertex i. */
 export type Ref = { id: string; k: 'a' | 'b' | 'c' | 'r' | 'p'; i?: number }
-type B = { id?: string; tag?: string; g?: number; fill?: string } // tag = layer id, g = group id, fill = CSS colour (closed shapes)
+type B = { id?: string; tag?: string; g?: number; fill?: string; fo?: boolean } // tag = layer id, g = group id, fill = CSS colour (closed shapes), fo = fill-only region from the paint bucket (no outline)
 export type Rect = { t: 'rect'; x: number; y: number; w: number; h: number; r: number; sheet?: boolean } & B // sheet = material sheet frame (never exported)
-export type Dim = { t: 'dim'; a: Pt; b: Pt; off: number; size: number; kind?: 'len' | 'diam'; ra?: Ref; rb?: Ref; cid?: string; dir?: number; drv?: boolean; val?: number } & B // pinned to geometry when ra/rb/cid are set; drv = locked to val
+export type Dim = { t: 'dim'; a: Pt; b: Pt; off: number; size: number; kind?: 'len' | 'diam' | 'rad'; color?: string; ra?: Ref; rb?: Ref; cid?: string; dir?: number; drv?: boolean; val?: number } & B // pinned to geometry when ra/rb/cid are set; drv = locked to val
 export type Poly = { t: 'poly'; c: Pt; n: number; ap: number; rot: number } & B // ap = apothem (centre to flat)
-export type Txt = { t: 'text'; p: Pt; s: string; size: number; tip?: Pt } & B
+export type Txt = { t: 'text'; p: Pt; s: string; size: number; tip?: Pt; color?: string } & B
 export type Pl = { t: 'pl'; pts: Pt[]; closed: boolean } & B // imported / converted polyline
 export type Guide = { t: 'guide'; p: Pt; d: Pt } & B // infinite construction line, never exported
 export type Img = { t: 'image'; x: number; y: number; w: number; h: number; img: string; op: number } & B // trace underlay
@@ -246,7 +246,7 @@ export function leaderLines(s: Txt): [Pt, Pt][] {
   const wing = (d: number): [Pt, Pt] => [s.tip!, { x: s.tip!.x + 2.5 * Math.cos(a + d), y: s.tip!.y + 2.5 * Math.sin(a + d) }]
   return [[s.tip, at], wing(0.35), wing(-0.35)]
 }
-export const dimText = (s: Dim, label: (mm: number) => string) => (s.kind === 'diam' ? '\u00d8' : '') + label(dimGeom(s).len)
+export const dimText = (s: Dim, label: (mm: number) => string) => (s.kind === 'diam' ? '\u00d8' : s.kind === 'rad' ? 'R' : '') + label(dimGeom(s).len)
 export function dimGeom(s: Dim) {
   const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y, L = Math.hypot(dx, dy) || 1
   const u = { x: dx / L, y: dy / L }, n = { x: -u.y, y: u.x }
@@ -350,7 +350,12 @@ export const flat = (shapes: Shape[]): Shape[] => shapes.filter(isVisible).flatM
 export function straightEdges(s: Shape): [Pt, Pt][] {
   if (s.t === 'inst') return expandInst(s).flatMap(straightEdges)
   if (s.t === 'line') return [[s.a, s.b]]
-  if (s.t === 'rect') return s.r > 0 ? [] : rectEdges(s)
+  if (s.t === 'rect') {
+    if (!(s.r > 0)) return rectEdges(s)
+    const { x, y, w, h } = s, r = Math.min(s.r, w / 2, h / 2) // only the straight sides: the corners are arcs
+    const e: [Pt, Pt][] = [[{ x: x + r, y }, { x: x + w - r, y }], [{ x: x + w, y: y + r }, { x: x + w, y: y + h - r }], [{ x: x + w - r, y: y + h }, { x: x + r, y: y + h }], [{ x, y: y + h - r }, { x, y: y + r }]]
+    return e.filter(([a, b]) => dist(a, b) > 1e-9)
+  }
   if (s.t === 'poly') return polyEdges(s)
   if (s.t === 'pl') return plEdges(s)
   return []
@@ -451,7 +456,7 @@ const piece = (q: Prim, u1: number, u2: number, base: Pick<Shape, 'tag' | 'g'>):
 const whole = (q: Prim, base: Pick<Shape, 'tag' | 'g'>): Shape => q.k === 'l' ? { t: 'line', a: q.a, b: q.b, ...base } : q.sw >= TAU - 1e-9 ? { t: 'circle', c: q.c, r: q.r, ...base } : { t: 'arc', c: q.c, r: q.r, a0: q.a0, a1: q.a0 + q.sw, ...base }
 const crossings = (q: Prim, others: Prim[]) => others.flatMap((o) => hits(q, o).map((pt) => paramOf(q, pt))).sort((x, y) => x - y)
 /** Eraser on a shape that crosses others: remove only the stretch between the neighbouring crossings; the rest becomes separate lines/arcs. null = no crossing there (delete the whole shape). */
-export function trimErase(shapes: Shape[], idx: number, p: Pt): Shape[] | null {
+function spanOf(shapes: Shape[], idx: number, p: Pt) {
   const s = shapes[idx], ps = prims(s)
   if (!ps) return null
   let hi = 0, bd = Infinity
@@ -460,19 +465,28 @@ export function trimErase(shapes: Shape[], idx: number, p: Pt): Shape[] | null {
   const others = shapes.flatMap((o, j) => (j === idx || !isVisible(o) ? [] : prims(o) ?? []))
   const cr = crossings(hit, others).filter((u, i, a) => i === 0 || u - a[i - 1] > 1e-6)
   if (!cr.length) return null
-  const rest = ps.filter((_, i) => i !== hi).map((q) => whole(q, base))
-  const out: (Shape | null)[] = []
   if (hit.k === 'a' && hit.sw >= TAU - 1e-9) { // a full circle: the removed stretch wraps around
     if (cr.length < 2) return null
     let k = cr.findIndex((u) => u > u0) - 1
     if (k < -1) k = cr.length - 1
     const left = cr[(k + cr.length) % cr.length], right = cr[(k + 1) % cr.length], gap = ((right - left) % len + len) % len || len
-    out.push(piece(hit, right, right + (len - gap), base))
-  } else {
-    const left = Math.max(0, ...cr.filter((u) => u <= u0)), right = Math.min(len, ...cr.filter((u) => u >= u0))
-    out.push(piece(hit, 0, left, base), piece(hit, right, len, base))
+    return { ps, hi, hit, len, base, left, right, gap, wrap: true }
   }
+  return { ps, hi, hit, len, base, left: Math.max(0, ...cr.filter((u) => u <= u0)), right: Math.min(len, ...cr.filter((u) => u >= u0)), gap: 0, wrap: false }
+}
+/** Eraser on a shape that crosses others: remove only the stretch between the neighbouring crossings; the rest becomes separate lines/arcs. null = no crossing there (delete the whole shape). */
+export function trimErase(shapes: Shape[], idx: number, p: Pt): Shape[] | null {
+  const sp = spanOf(shapes, idx, p)
+  if (!sp) return null
+  const { ps, hi, hit, len, base, left, right, gap, wrap } = sp
+  const rest = ps.filter((_, i) => i !== hi).map((q) => whole(q, base))
+  const out = wrap ? [piece(hit, right, right + (len - gap), base)] : [piece(hit, 0, left, base), piece(hit, right, len, base)]
   return [...rest, ...(out.filter(Boolean) as Shape[])]
+}
+/** The stretch the eraser would remove at p (for the highlight). null = the whole shape goes. */
+export function erasedPart(shapes: Shape[], idx: number, p: Pt): Shape | null {
+  const sp = spanOf(shapes, idx, p)
+  return sp ? (sp.wrap ? piece(sp.hit, sp.left, sp.left + sp.gap, sp.base) : piece(sp.hit, sp.left, sp.right, sp.base)) : null
 }
 /** Cut a shape into separate lines/arcs at every crossing with the other shapes. null = nothing crosses it. */
 export function splitShape(shapes: Shape[], idx: number): Shape[] | null {

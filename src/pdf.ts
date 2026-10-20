@@ -117,7 +117,7 @@ export function initPage(d: PageDeps) {
       }
       const colorOf = d.color?.() ?? null
       const rgb = (c: string) => { const n = parseInt(c.replace('#', '').padEnd(6, '0').slice(0, 6), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255] as const }
-      const style = (s: Shape) => { if (s.fill) { g.setFillColor(...rgb(s.fill)); return 'FD' } return 'S' }
+      const style = (s: Shape) => { if (s.fill) { g.setFillColor(...rgb(s.fill === 'paper' ? '#ffffff' : s.fill)); return 'FD' } return 'S' }
       for (const s of L.shapes) {
         if (colorOf) { const n = parseInt(colorOf(s).slice(1), 16); g.setDrawColor((n >> 16) & 255, (n >> 8) & 255, n & 255); g.setTextColor((n >> 16) & 255, (n >> 8) & 255, n & 255) }
         if (s.t === 'line') line(s.a, s.b)
